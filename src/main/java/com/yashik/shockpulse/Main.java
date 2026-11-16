@@ -1,71 +1,95 @@
 package com.yashik.shockpulse;
 
-import com.yashik.shockpulse.exception.DuplicateOrderException;
-import com.yashik.shockpulse.exception.OutOfStockException;
-import com.yashik.shockpulse.exception.ProductNotFoundException;
-import com.yashik.shockpulse.model.Order;
+import java.util.List;
+
+import com.yashik.shockpulse.concurrency.CustomerRushTask;
+import com.yashik.shockpulse.concurrency.FlashSaleAuditThread;
+import com.yashik.shockpulse.concurrency.ThreadLifecycleMonitor;
 import com.yashik.shockpulse.model.Product;
 import com.yashik.shockpulse.service.InventoryManager;
 
 public class Main {
     public static final String GREEN = "\u001B[32m";
-    public static final String RED = "\u001B[31m";
     public static final String YELLOW = "\u001B[33m";
     public static final String CYAN = "\u001B[36m";
     public static final String RESET = "\u001B[0m";
 
     public static void main(String[] args) {
         System.out.println(CYAN + "================================================================" + RESET);
-        System.out.println(CYAN + "   SHOCKPULSE: PHASE 1 - COLLECTIONS & RECORD MANAGER (LAB 1)   " + RESET);
+        System.out.println(CYAN + "   SHOCKPULSE: PHASE 2 - THREAD CONTROL & LIFECYCLE (LABS 2-4)  " + RESET);
         System.out.println(CYAN + "================================================================" + RESET);
 
         InventoryManager manager = new InventoryManager();
-
-        // 1. Add Products (ArrayList + HashMap + HashSet)
         manager.addProduct(new Product("SP-101", "Mechanical Keyboard", "Peripherals", 2499.00, 3));
         manager.addProduct(new Product("SP-102", "RTX 4070 Super GPU", "Graphics", 52999.00, 1));
-        manager.addProduct(new Product("SP-103", "NVMe Gen4 SSD 1TB", "Storage", 5499.00, 8));
-        manager.addProduct(new Product("SP-104", "Gaming Mouse 26K DPI", "Peripherals", 1899.00, 5));
 
-        System.out.println(YELLOW + "\n[1] Initial Inventory (Insertion Order):" + RESET);
+        // Lab 2: Create tasks using Runnable (CustomerRushTask) and extending Thread
+        // (FlashSaleAuditThread)
+        Thread vipBuyer = new Thread(
+                new CustomerRushTask(manager, "CUST-VIP", "SP-102", 1, 200),
+                "Buyer-VIP");
+        Thread regularBuyer = new Thread(
+                new CustomerRushTask(manager, "CUST-REG", "SP-101", 2, 350),
+                "Buyer-Regular");
+        Thread slowBuyer = new Thread(
+                new CustomerRushTask(manager, "CUST-SLOW", "SP-101", 1, 1500),
+                "Buyer-Slow");
+
+        FlashSaleAuditThread auditThread = new FlashSaleAuditThread(manager, 2, 250);
+
+        // Lab 4: Set thread priorities
+        vipBuyer.setPriority(Thread.MAX_PRIORITY); // Priority 10
+        regularBuyer.setPriority(Thread.NORM_PRIORITY); // Priority 5
+        slowBuyer.setPriority(Thread.MIN_PRIORITY); // Priority 1
+
+        List<Thread> watchedThreads = List.of(vipBuyer, regularBuyer, slowBuyer, auditThread);
+
+        // Lab 4: Observe NEW state before calling start()
+        System.out.println(YELLOW + "\n[1] Observing Initial Thread States (Before start()):" + RESET);
+        for (Thread t : watchedThreads) {
+            System.out.printf("  Thread %-15s | State: %-14s | Priority: %d | Daemon: %b%n",
+                    t.getName(), t.getState(), t.getPriority(), t.isDaemon());
+        }
+
+        // Lab 4: Start Daemon Lifecycle Monitor
+        ThreadLifecycleMonitor daemonMonitor = new ThreadLifecycleMonitor(watchedThreads, 120);
+        daemonMonitor.start();
+
+        // Lab 2: Start threads concurrently using start()
+        System.out.println(YELLOW + "\n[2] Starting Concurrent Threads..." + RESET);
+        auditThread.start();
+        vipBuyer.start();
+        regularBuyer.start();
+        slowBuyer.start();
+
+        try {
+            // Lab 3: Wait for VIP and Regular buyers to complete using join()
+            vipBuyer.join();
+            regularBuyer.join();
+
+            // Lab 3: Interrupt the slow sleeping buyer if still active after 450ms
+            if (slowBuyer.isAlive()) {
+                System.out.println(YELLOW + "\n[3] Flash Sale Window Closing! Calling interrupt() on "
+                        + slowBuyer.getName() + "..." + RESET);
+                slowBuyer.interrupt();
+            }
+
+            // Ensure all remaining non-daemon threads complete
+            slowBuyer.join();
+            auditThread.join();
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        // Lab 4: Observe TERMINATED state after completion
+        System.out.println(YELLOW + "\n[4] Observing Final Thread States (After join()):" + RESET);
+        for (Thread t : watchedThreads) {
+            System.out.printf("  Thread %-15s | State: %-14s%n", t.getName(), t.getState());
+        }
+
+        System.out.println(GREEN + "\n[5] Final Inventory & Order Ledger:" + RESET);
         manager.displayAllProducts();
-
-        // 2. Search & Update (HashMap O(1) lookup)
-        try {
-            System.out.println(YELLOW + "\n[2] Searching & Updating SP-101 Stock to 5..." + RESET);
-            manager.updateProductStock("SP-101", 5);
-            System.out.println(GREEN + "  Updated: " + manager.searchProductById("SP-101") + RESET);
-        } catch (ProductNotFoundException e) {
-            System.out.println(RED + "  Error: " + e.getMessage() + RESET);
-        }
-
-        // 3. Process Flash-Sale Orders & Trigger Custom Exceptions
-        System.out.println(YELLOW + "\n[3] Executing Flash-Sale Orders & Exception Checks:" + RESET);
-        attemptOrder(manager, "CUST-01", "SP-102", 1); // Confirms last GPU
-        attemptOrder(manager, "CUST-02", "SP-102", 1); // Fails -> OutOfStockException
-        attemptOrder(manager, "CUST-01", "SP-101", 2); // Confirms 2 Keyboards
-        attemptOrder(manager, "CUST-01", "SP-101", 1); // Fails -> DuplicateOrderException (HashSet)
-        attemptOrder(manager, "CUST-03", "SP-103", 2); // Confirms 2 SSDs
-
-        // 4. Sort Products by Stock Descending using Comparator
-        System.out.println(YELLOW + "\n[4] Products Sorted by Remaining Stock (Comparator):" + RESET);
-        for (Product p : manager.getProductsSortedByStockDesc()) {
-            System.out.println("  " + p);
-        }
-
-        // 5. Sort Orders by Total Amount Descending using Comparator
-        System.out.println(YELLOW + "\n[5] Order Ledger Sorted by Total Value (Comparator):" + RESET);
-        for (Order o : manager.getOrdersSortedByAmountDesc()) {
-            System.out.println("  " + o);
-        }
-    }
-
-    private static void attemptOrder(InventoryManager manager, String customerId, String productId, int qty) {
-        try {
-            Order order = manager.placeFlashOrder(customerId, productId, qty);
-            System.out.println(GREEN + "  SUCCESS: " + order + RESET);
-        } catch (OutOfStockException | DuplicateOrderException | ProductNotFoundException e) {
-            System.out.println(RED + "  REJECTED [" + e.getClass().getSimpleName() + "]: " + e.getMessage() + RESET);
-        }
+        manager.getOrderHistory().forEach(o -> System.out.println("  " + o));
     }
 }

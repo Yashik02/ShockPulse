@@ -2,90 +2,106 @@ package com.yashik.shockpulse;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
-import com.yashik.shockpulse.concurrency.FlashSaleCheckoutEngine;
-import com.yashik.shockpulse.concurrency.FlashSaleCheckoutEngine.SyncMode;
+import com.yashik.shockpulse.concurrency.CheckoutWorkerCallable;
+import com.yashik.shockpulse.concurrency.OrderBuffer;
+import com.yashik.shockpulse.concurrency.OrderRequest;
 import com.yashik.shockpulse.model.Product;
+import com.yashik.shockpulse.service.InventoryManager;
+import com.yashik.shockpulse.service.ThreadSafeInventoryService;
 
 public class Main {
     public static final String GREEN = "\u001B[32m";
-    public static final String RED = "\u001B[31m";
     public static final String YELLOW = "\u001B[33m";
     public static final String CYAN = "\u001B[36m";
     public static final String RESET = "\u001B[0m";
 
-    public static void main(String[] args) throws InterruptedException {
-        System.out.println(CYAN + "=====================================================================" + RESET);
-        System.out.println(CYAN + "   SHOCKPULSE: PHASE 3 - RACE CONDITIONS & SYNCHRONIZATION (LAB 5-6) " + RESET);
-        System.out.println(CYAN + "=====================================================================" + RESET);
+    public static void main(String[] args) throws InterruptedException, ExecutionException {
+        System.out.println(CYAN + "======================================================================" + RESET);
+        System.out.println(CYAN + "   SHOCKPULSE: PHASE 4 - PRODUCER-CONSUMER & THREAD POOLS (LABS 7-9)  " + RESET);
+        System.out.println(CYAN + "======================================================================" + RESET);
 
-        int initialStock = 3;
-        int concurrentBuyers = 10;
+        // Setup inventory with limited flash-sale stock (Total 6 items available)
+        InventoryManager manager = new InventoryManager();
+        manager.addProduct(new Product("SP-101", "Mechanical Keyboard", "Peripherals", 2499.00, 4));
+        manager.addProduct(new Product("SP-102", "RTX 4070 Super GPU", "Graphics", 52999.00, 2));
 
-        // 1. Lab 5 Part A: Unsafe Execution (Demonstrates Race Condition / Overselling)
-        System.out.println(YELLOW + "\n[TEST 1] Running UNSAFE Checkout (10 Buyers vs 3 Units in Stock):" + RESET);
-        long unsafeTime = runSimulation(SyncMode.UNSAFE, initialStock, concurrentBuyers);
+        ThreadSafeInventoryService safeService = new ThreadSafeInventoryService(manager);
 
-        // 2. Lab 5 Part B: Synchronized Method (Fixes Race Condition, Full-Method Lock)
-        System.out.println(YELLOW + "\n[TEST 2] Running SYNCHRONIZED METHOD Checkout (Lab 5 Fix):" + RESET);
-        long syncMethodTime = runSimulation(SyncMode.SYNC_METHOD, initialStock, concurrentBuyers);
+        // Lab 7: Bounded buffer of capacity 4 (forces producers to wait() when full)
+        OrderBuffer orderBuffer = new OrderBuffer(4);
 
-        // 3. Lab 6: Synchronized Block (Fine-Grained Locking + Parallel Payment Check)
-        System.out.println(YELLOW + "\n[TEST 3] Running SYNCHRONIZED BLOCK Checkout (Lab 6 Optimization):" + RESET);
-        long syncBlockTime = runSimulation(SyncMode.SYNC_BLOCK, initialStock, concurrentBuyers);
+        // Lab 8: Fixed thread pools for producers (API gateway) and consumers (Checkout
+        // workers)
+        ExecutorService producerPool = Executors.newFixedThreadPool(3);
+        ExecutorService workerPool = Executors.newFixedThreadPool(3);
 
-        // Final Comparison Table for Viva Walkthrough
-        System.out.println(CYAN + "\n=====================================================================" + RESET);
-        System.out.println(CYAN + "   LAB 5 vs LAB 6 PERFORMANCE & CONSISTENCY SUMMARY                  " + RESET);
-        System.out.println(CYAN + "=====================================================================" + RESET);
-        System.out.printf("  1. UNSAFE Mode             : %4d ms (Fast, but causes OVERSELLING / Negative Stock!)%n",
-                unsafeTime);
-        System.out.printf("  2. Synchronized Method     : %4d ms (Thread-safe, but serializes payment verification)%n",
-                syncMethodTime);
-        System.out.printf("  3. Synchronized Block      : %4d ms (Thread-safe AND ~3x faster via fine-grained locks)%n",
-                syncBlockTime);
-    }
+        // Lab 9: ScheduledExecutorService to close the flash-sale window after 1.5
+        // seconds
+        ScheduledExecutorService saleScheduler = Executors.newSingleThreadScheduledExecutor();
+        saleScheduler.schedule(() -> {
+            System.out.println(YELLOW + "\n[SCHEDULER] Flash-sale timer expired! Closing OrderBuffer..." + RESET);
+            orderBuffer.closeSale();
+        }, 1500, TimeUnit.MILLISECONDS);
 
-    private static long runSimulation(SyncMode mode, int initialStock, int buyerCount) throws InterruptedException {
-        Product gpuDeal = new Product("SP-102", "RTX 4070 Super GPU", "Graphics", 52999.00, initialStock);
-        FlashSaleCheckoutEngine engine = new FlashSaleCheckoutEngine(gpuDeal);
+        // Submit 3 Callable<Integer> checkout workers (Lab 9)
+        List<Future<Integer>> workerFutures = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            workerFutures.add(workerPool.submit(new CheckoutWorkerCallable(orderBuffer, safeService)));
+        }
 
-        List<Thread> buyers = new ArrayList<>();
-        long startTime = System.currentTimeMillis();
+        // Submit 12 incoming customer requests into the bounded buffer (Lab 7 & 8)
+        List<OrderRequest> incomingTraffic = List.of(
+                new OrderRequest("CUST-01", "SP-102", 1),
+                new OrderRequest("CUST-02", "SP-102", 1),
+                new OrderRequest("CUST-03", "SP-102", 1), // Will fail (only 2 GPUs in stock)
+                new OrderRequest("CUST-04", "SP-101", 1),
+                new OrderRequest("CUST-05", "SP-101", 2),
+                new OrderRequest("CUST-06", "SP-101", 1),
+                new OrderRequest("CUST-07", "SP-101", 1), // Will fail (4 keyboards already claimed)
+                new OrderRequest("CUST-04", "SP-101", 1), // Will fail (Duplicate customer claim)
+                new OrderRequest("CUST-08", "SP-102", 1),
+                new OrderRequest("CUST-09", "SP-101", 1),
+                new OrderRequest("CUST-10", "SP-101", 1),
+                new OrderRequest("CUST-11", "SP-102", 1));
 
-        for (int i = 1; i <= buyerCount; i++) {
-            final String customerId = String.format("CUST-%02d", i);
-            Thread buyerThread = new Thread(() -> {
-                switch (mode) {
-                    case UNSAFE -> engine.checkoutUnsafe(customerId, 1);
-                    case SYNC_METHOD -> engine.checkoutSynchronizedMethod(customerId, 1);
-                    case SYNC_BLOCK -> engine.checkoutSynchronizedBlock(customerId, 1);
+        System.out.println(
+                YELLOW + "\n[1] Dispatching 12 burst customer requests into Bounded Buffer (Capacity: 4)..." + RESET);
+        for (OrderRequest req : incomingTraffic) {
+            producerPool.submit(() -> {
+                try {
+                    orderBuffer.produce(req);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
                 }
-            }, "Buyer-" + i);
-            buyers.add(buyerThread);
-            buyerThread.start();
+            });
         }
 
-        for (Thread t : buyers) {
-            t.join();
+        // Lab 8: Graceful shutdown of producer pool
+        producerPool.shutdown();
+        producerPool.awaitTermination(5, TimeUnit.SECONDS);
+
+        // Lab 9: Collect Callable<Integer> results via Future.get()
+        int totalConfirmedOrders = 0;
+        for (int i = 0; i < workerFutures.size(); i++) {
+            int count = workerFutures.get(i).get();
+            totalConfirmedOrders += count;
+            System.out.printf("  Worker-%d reported %d confirmed orders via Future.get()%n", (i + 1), count);
         }
 
-        long elapsed = System.currentTimeMillis() - startTime;
+        // Graceful shutdown of worker pool & scheduler
+        workerPool.shutdown();
+        workerPool.awaitTermination(5, TimeUnit.SECONDS);
+        saleScheduler.shutdown();
 
-        boolean consistent = (engine.getUnitsSold() == initialStock) && (engine.getRemainingStock() == 0);
-        String color = consistent ? GREEN : RED;
-
-        System.out.printf(
-                "%s  -> RESULT [%s]: Initial Stock: %d | Units Sold: %d | Final Stock: %d | Traffic Logged: %d | Time: %d ms%s%n",
-                color,
-                consistent ? "CONSISTENT" : "RACE CONDITION DETECTED!",
-                initialStock,
-                engine.getUnitsSold(),
-                engine.getRemainingStock(),
-                engine.getTotalTrafficAttempts(),
-                elapsed,
-                RESET);
-
-        return elapsed;
+        System.out.println(GREEN + "\n[2] Final Post-Sale Audit Summary:" + RESET);
+        System.out.println("  Total Confirmed Orders (Aggregated from Futures): " + totalConfirmedOrders);
+        manager.displayAllProducts();
     }
 }

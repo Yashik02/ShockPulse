@@ -4,7 +4,10 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.UUID;
+import java.util.List;
+import java.util.ArrayList;
 
 import com.yashik.shockpulse.exception.OutOfStockException;
 import com.yashik.shockpulse.model.Order;
@@ -113,5 +116,27 @@ public class OrderDAO {
                 }
             }
         }
+    }
+
+    // Fetch all persisted orders from Supabase for Stream Analytics & CSV Export
+    public List<Order> getAllOrders() throws SQLException {
+        List<Order> orders = new ArrayList<>();
+        String sql = "SELECT order_id, customer_id, product_id, quantity, total_amount, status FROM orders ORDER BY ordered_at DESC";
+
+        try (Connection conn = DBConnectionManager.getConnection();
+                Statement stmt = conn.createStatement();
+                ResultSet rs = stmt.executeQuery(sql)) {
+
+            while (rs.next()) {
+                orders.add(new Order(
+                        rs.getString("order_id"),
+                        rs.getString("customer_id"),
+                        rs.getString("product_id"),
+                        rs.getInt("quantity"),
+                        rs.getDouble("total_amount"),
+                        OrderStatus.valueOf(rs.getString("status"))));
+            }
+        }
+        return orders;
     }
 }

@@ -113,4 +113,27 @@ public class ProductDAO {
             }
         }
     }
+
+    // Upsert product from CSV into Supabase (inserts new or adds restock quantity)
+    public int upsertProduct(Product product) throws SQLException {
+        String sql = """
+                INSERT INTO products (product_id, name, category, flash_price, stock_quantity)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (product_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    category = EXCLUDED.category,
+                    flash_price = EXCLUDED.flash_price,
+                    stock_quantity = products.stock_quantity + EXCLUDED.stock_quantity
+                """;
+        try (Connection conn = DBConnectionManager.getConnection();
+                PreparedStatement pstmt = conn.prepareStatement(sql)) {
+
+            pstmt.setString(1, product.getProductId());
+            pstmt.setString(2, product.getName());
+            pstmt.setString(3, product.getCategory());
+            pstmt.setDouble(4, product.getFlashPrice());
+            pstmt.setInt(5, product.getStockQuantity());
+            return pstmt.executeUpdate();
+        }
+    }
 }

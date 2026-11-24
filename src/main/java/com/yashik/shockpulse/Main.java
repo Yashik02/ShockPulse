@@ -1,95 +1,91 @@
 package com.yashik.shockpulse;
 
+import java.util.ArrayList;
 import java.util.List;
 
-import com.yashik.shockpulse.concurrency.CustomerRushTask;
-import com.yashik.shockpulse.concurrency.FlashSaleAuditThread;
-import com.yashik.shockpulse.concurrency.ThreadLifecycleMonitor;
+import com.yashik.shockpulse.concurrency.FlashSaleCheckoutEngine;
+import com.yashik.shockpulse.concurrency.FlashSaleCheckoutEngine.SyncMode;
 import com.yashik.shockpulse.model.Product;
-import com.yashik.shockpulse.service.InventoryManager;
 
 public class Main {
     public static final String GREEN = "\u001B[32m";
+    public static final String RED = "\u001B[31m";
     public static final String YELLOW = "\u001B[33m";
     public static final String CYAN = "\u001B[36m";
     public static final String RESET = "\u001B[0m";
 
-    public static void main(String[] args) {
-        System.out.println(CYAN + "================================================================" + RESET);
-        System.out.println(CYAN + "   SHOCKPULSE: PHASE 2 - THREAD CONTROL & LIFECYCLE (LABS 2-4)  " + RESET);
-        System.out.println(CYAN + "================================================================" + RESET);
+    public static void main(String[] args) throws InterruptedException {
+        System.out.println(CYAN + "=====================================================================" + RESET);
+        System.out.println(CYAN + "   SHOCKPULSE: PHASE 3 - RACE CONDITIONS & SYNCHRONIZATION (LAB 5-6) " + RESET);
+        System.out.println(CYAN + "=====================================================================" + RESET);
 
-        InventoryManager manager = new InventoryManager();
-        manager.addProduct(new Product("SP-101", "Mechanical Keyboard", "Peripherals", 2499.00, 3));
-        manager.addProduct(new Product("SP-102", "RTX 4070 Super GPU", "Graphics", 52999.00, 1));
+        int initialStock = 3;
+        int concurrentBuyers = 10;
 
-        // Lab 2: Create tasks using Runnable (CustomerRushTask) and extending Thread
-        // (FlashSaleAuditThread)
-        Thread vipBuyer = new Thread(
-                new CustomerRushTask(manager, "CUST-VIP", "SP-102", 1, 200),
-                "Buyer-VIP");
-        Thread regularBuyer = new Thread(
-                new CustomerRushTask(manager, "CUST-REG", "SP-101", 2, 350),
-                "Buyer-Regular");
-        Thread slowBuyer = new Thread(
-                new CustomerRushTask(manager, "CUST-SLOW", "SP-101", 1, 1500),
-                "Buyer-Slow");
+        // 1. Lab 5 Part A: Unsafe Execution (Demonstrates Race Condition / Overselling)
+        System.out.println(YELLOW + "\n[TEST 1] Running UNSAFE Checkout (10 Buyers vs 3 Units in Stock):" + RESET);
+        long unsafeTime = runSimulation(SyncMode.UNSAFE, initialStock, concurrentBuyers);
 
-        FlashSaleAuditThread auditThread = new FlashSaleAuditThread(manager, 2, 250);
+        // 2. Lab 5 Part B: Synchronized Method (Fixes Race Condition, Full-Method Lock)
+        System.out.println(YELLOW + "\n[TEST 2] Running SYNCHRONIZED METHOD Checkout (Lab 5 Fix):" + RESET);
+        long syncMethodTime = runSimulation(SyncMode.SYNC_METHOD, initialStock, concurrentBuyers);
 
-        // Lab 4: Set thread priorities
-        vipBuyer.setPriority(Thread.MAX_PRIORITY); // Priority 10
-        regularBuyer.setPriority(Thread.NORM_PRIORITY); // Priority 5
-        slowBuyer.setPriority(Thread.MIN_PRIORITY); // Priority 1
+        // 3. Lab 6: Synchronized Block (Fine-Grained Locking + Parallel Payment Check)
+        System.out.println(YELLOW + "\n[TEST 3] Running SYNCHRONIZED BLOCK Checkout (Lab 6 Optimization):" + RESET);
+        long syncBlockTime = runSimulation(SyncMode.SYNC_BLOCK, initialStock, concurrentBuyers);
 
-        List<Thread> watchedThreads = List.of(vipBuyer, regularBuyer, slowBuyer, auditThread);
+        // Final Comparison Table for Viva Walkthrough
+        System.out.println(CYAN + "\n=====================================================================" + RESET);
+        System.out.println(CYAN + "   LAB 5 vs LAB 6 PERFORMANCE & CONSISTENCY SUMMARY                  " + RESET);
+        System.out.println(CYAN + "=====================================================================" + RESET);
+        System.out.printf("  1. UNSAFE Mode             : %4d ms (Fast, but causes OVERSELLING / Negative Stock!)%n",
+                unsafeTime);
+        System.out.printf("  2. Synchronized Method     : %4d ms (Thread-safe, but serializes payment verification)%n",
+                syncMethodTime);
+        System.out.printf("  3. Synchronized Block      : %4d ms (Thread-safe AND ~3x faster via fine-grained locks)%n",
+                syncBlockTime);
+    }
 
-        // Lab 4: Observe NEW state before calling start()
-        System.out.println(YELLOW + "\n[1] Observing Initial Thread States (Before start()):" + RESET);
-        for (Thread t : watchedThreads) {
-            System.out.printf("  Thread %-15s | State: %-14s | Priority: %d | Daemon: %b%n",
-                    t.getName(), t.getState(), t.getPriority(), t.isDaemon());
+    private static long runSimulation(SyncMode mode, int initialStock, int buyerCount) throws InterruptedException {
+        Product gpuDeal = new Product("SP-102", "RTX 4070 Super GPU", "Graphics", 52999.00, initialStock);
+        FlashSaleCheckoutEngine engine = new FlashSaleCheckoutEngine(gpuDeal);
+
+        List<Thread> buyers = new ArrayList<>();
+        long startTime = System.currentTimeMillis();
+
+        for (int i = 1; i <= buyerCount; i++) {
+            final String customerId = String.format("CUST-%02d", i);
+            Thread buyerThread = new Thread(() -> {
+                switch (mode) {
+                    case UNSAFE -> engine.checkoutUnsafe(customerId, 1);
+                    case SYNC_METHOD -> engine.checkoutSynchronizedMethod(customerId, 1);
+                    case SYNC_BLOCK -> engine.checkoutSynchronizedBlock(customerId, 1);
+                }
+            }, "Buyer-" + i);
+            buyers.add(buyerThread);
+            buyerThread.start();
         }
 
-        // Lab 4: Start Daemon Lifecycle Monitor
-        ThreadLifecycleMonitor daemonMonitor = new ThreadLifecycleMonitor(watchedThreads, 120);
-        daemonMonitor.start();
-
-        // Lab 2: Start threads concurrently using start()
-        System.out.println(YELLOW + "\n[2] Starting Concurrent Threads..." + RESET);
-        auditThread.start();
-        vipBuyer.start();
-        regularBuyer.start();
-        slowBuyer.start();
-
-        try {
-            // Lab 3: Wait for VIP and Regular buyers to complete using join()
-            vipBuyer.join();
-            regularBuyer.join();
-
-            // Lab 3: Interrupt the slow sleeping buyer if still active after 450ms
-            if (slowBuyer.isAlive()) {
-                System.out.println(YELLOW + "\n[3] Flash Sale Window Closing! Calling interrupt() on "
-                        + slowBuyer.getName() + "..." + RESET);
-                slowBuyer.interrupt();
-            }
-
-            // Ensure all remaining non-daemon threads complete
-            slowBuyer.join();
-            auditThread.join();
-
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        for (Thread t : buyers) {
+            t.join();
         }
 
-        // Lab 4: Observe TERMINATED state after completion
-        System.out.println(YELLOW + "\n[4] Observing Final Thread States (After join()):" + RESET);
-        for (Thread t : watchedThreads) {
-            System.out.printf("  Thread %-15s | State: %-14s%n", t.getName(), t.getState());
-        }
+        long elapsed = System.currentTimeMillis() - startTime;
 
-        System.out.println(GREEN + "\n[5] Final Inventory & Order Ledger:" + RESET);
-        manager.displayAllProducts();
-        manager.getOrderHistory().forEach(o -> System.out.println("  " + o));
+        boolean consistent = (engine.getUnitsSold() == initialStock) && (engine.getRemainingStock() == 0);
+        String color = consistent ? GREEN : RED;
+
+        System.out.printf(
+                "%s  -> RESULT [%s]: Initial Stock: %d | Units Sold: %d | Final Stock: %d | Traffic Logged: %d | Time: %d ms%s%n",
+                color,
+                consistent ? "CONSISTENT" : "RACE CONDITION DETECTED!",
+                initialStock,
+                engine.getUnitsSold(),
+                engine.getRemainingStock(),
+                engine.getTotalTrafficAttempts(),
+                elapsed,
+                RESET);
+
+        return elapsed;
     }
 }
